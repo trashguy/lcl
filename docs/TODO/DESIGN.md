@@ -2,145 +2,95 @@
 
 ## What is LCL?
 
-Linux Compatibility Layer. Gives macOS users a native Linux environment with access to macOS system services (Keychain, Okta, clipboard, etc.). Think WSL for Mac.
+Linux Compatibility Layer. A native Linux VM environment for macOS with access to macOS system services (Keychain, clipboard, notifications, open URLs). Think WSL for Mac.
 
 ## Stack
 
-| Component | Source | Language |
+All Zig. No Swift, no shell execution.
+
+| Component | Language | Notes |
 |---|---|---|
-| Terminal | Ghostty (existing) | Zig |
-| VM Runtime | Virtualization.framework (ObjC API from Zig) | Zig |
-| LCL CLI | We build | Zig |
-| Host Bridge Daemon | We build | Zig |
-| Guest Bridge Client | We build | Zig (cross-compiled to aarch64-linux) |
-
-### Why all Zig?
-
-- **One language** for host CLI, host daemon, and guest client
-- Zig has native C interop — calls Security.framework (Keychain) directly
-- Zig can call ObjC via `objc_msgSend` — Ghostty proves this works for AppKit
-- Cross-compiles to static Linux binaries trivially: `zig build -Dtarget=aarch64-linux`
-- Aligns with Ghostty ecosystem
-- No Swift, no shell execution — all framework calls via C API or ObjC runtime
-- No shell-out attack surface
-
-### macOS API access from Zig
-
-All access is via direct C calls or ObjC runtime (`objc_msgSend`). Zero shell execution.
-
-| API | Approach |
-|---|---|
-| Virtualization.framework (VM) | objc_msgSend (VZVirtualMachine, VZVirtioSocketDevice, etc.) |
-| Security.framework (Keychain) | Direct C calls (SecItemCopyMatching, etc.) |
-| NSPasteboard (clipboard) | objc_msgSend |
-| NSWorkspace (open URLs/files) | objc_msgSend |
-| UserNotifications | objc_msgSend |
-
-Reference: Ghostty (github.com/ghostty-org/ghostty) and Code-Hex/vz (Go) both call these ObjC APIs from non-ObjC languages.
+| LCL CLI (`lcl`) | Zig | init, build, start, stop, status, config, shell, destroy |
+| LCL Terminal (`lcl-app`) | Zig | Standalone macOS GUI with custom VT100 parser |
+| Bridge Host | Zig | Runs inside `lcl` process, vsock port 5000 |
+| Bridge Guest (`lcl-bridge-guest`) | Zig | Static aarch64-linux ELF, cross-compiled |
+| Shell Service | Zig | Guest-side PTY daemon, vsock port 5001 |
+| Image Builder | Zig + lwext4 (C) | Pure-Zig ext4 creation, no mke2fs |
+| VM Runtime | Zig → ObjC | Virtualization.framework via objc_msgSend |
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────────────────────────────────┐
-│   Ghostty    │     │  lcl CLI                                     │
-│   terminal   │────►│  lcl init / start / stop / status / config   │
-└─────────────┘     └──────────┬───────────────────────────────────┘
-                               │
-                    ┌──────────▼───────────────────────────────────┐
-                    │  Virtualization.framework (ObjC API from Zig)  │
-                    │  ├─ OCI image (archlinux, ubuntu, etc.)      │
-                    │  ├─ VirtioFS mounts (macOS FS → guest)       │
-                    │  ├─ vmnet networking                          │
-                    │  └─ vsock (host ↔ guest channel)             │
-                    └──────────┬───────────────────────────────────┘
-                               │ vsock
-              ┌────────────────┼────────────────┐
-              │                │                │
-   ┌──────────▼──────┐  ┌─────▼──────────────────────────┐
-   │ lcl-bridge-host  │  │  Linux Guest                    │
-   │ (Zig daemon)     │  │  ├─ user's shell (zsh/bash/etc) │
-   │                  │  │  ├─ lcl-bridge-guest (client)   │
-   │ Keychain access  │  │  └─ CLI tools:                  │
-   │ Clipboard sync   │  │     macos-keychain              │
-   │ Okta tokens      │  │     macos-clipboard             │
-   │ Open URLs/files  │  │     macos-open                  │
-   │ Notifications    │  │     macos-okta                  │
-   └──────────────────┘  │     macos-notify                │
-                         └─────────────────────────────────┘
+┌──────────────────────┐              ┌──────────────────────────────┐
+│  LCL.app (macOS)     │              │  Linux Guest (Arch ARM)       │
+│  ┌────────────────┐  │   vsock      │                               │
+│  │ Terminal View   │  │ ◄── :5001 ──│  lcl-bridge-guest             │
+│  │ VT100 parser    │  │             │    shell-service (PTY daemon) │
+│  │ CoreText render │  │             │                               │
+│  └────────────────┘  │   vsock      │  CLI tools:                   │
+│                      │ ◄── :5000 ──│    macos-keychain              │
+│  Bridge handler:     │             │    macos-clipboard             │
+│    Keychain          │             │    macos-open                  │
+│    Clipboard         │             │    macos-notify                │
+│    Open URLs/files   │             │                               │
+│    Notifications     │              └──────────────────────────────┘
+└──────────────────────┘
 ```
 
-## Data flow example: Keychain access
+## Key Decisions
 
-```
-1. User in Arch guest runs:  macos-keychain get --service vpn --account adam
-2. macos-keychain → lcl-bridge-guest → vsock → lcl-bridge-host
-3. Host daemon calls Security.framework SecItemCopyMatching()
-4. Result flows back: host → vsock → guest → stdout
-```
+| Decision | Choice |
+|---|---|
+| Language | Zig — entire stack (host CLI, GUI app, guest binary, framework bindings) |
+| VM runtime | Virtualization.framework via ObjC runtime (objc_msgSend) |
+| Bridge transport | Custom binary TLV protocol over vsock (port 5000) |
+| Shell transport | Framed byte stream over vsock (port 5001) |
+| Terminal emulation | Custom VT100 parser (Paul Williams state machine) |
+| Rendering | CoreText + CoreGraphics via objc_msgSend |
+| ext4 creation | lwext4 C library (vendored, BSD-licensed subset) |
+| Config format | TOML (`~/.config/lcl/<env-name>/lcl.toml`) |
+| macOS API access | Direct C calls (Security.framework) or objc_msgSend (AppKit) |
+| Min platform | macOS 26, Apple Silicon only |
 
-## File layout (planned)
+## Binaries
 
-```
-lcl/
-├── docs/
-│   └── TODO/
-│       ├── DESIGN.md              ← you are here
-│       ├── 00-overview.md
-│       ├── 01-cli.md
-│       ├── 02-bridge-daemon.md
-│       ├── 03-container-images.md
-│       ├── 04-stretch-goals.md
-│       └── 05-open-questions.md
-├── src/                           ← All Zig
-│   ├── cli/                       ← lcl CLI (init, start, stop, etc.)
-│   ├── bridge/
-│   │   ├── host/                  ← bridge host daemon (macOS APIs)
-│   │   ├── guest/                 ← bridge guest client (runs in Linux)
-│   │   └── protocol.zig          ← shared message types + wire format
-│   ├── macos/                     ← macOS framework bindings
-│   │   ├── objc.zig               ← ObjC runtime helpers (objc_msgSend, selectors, etc.)
-│   │   ├── virtualization.zig     ← Virtualization.framework (VZVirtualMachine, vsock, VirtioFS)
-│   │   ├── security.zig           ← Security.framework (Keychain)
-│   │   ├── pasteboard.zig         ← NSPasteboard (clipboard)
-│   │   ├── workspace.zig          ← NSWorkspace (open URLs/files)
-│   │   └── notifications.zig      ← UserNotifications
-│   └── vm/                        ← VM lifecycle management
-│       ├── config.zig             ← VM configuration (CPU, memory, devices)
-│       ├── lifecycle.zig           ← start, stop, pause, resume
-│       └── devices.zig            ← VirtioFS mounts, vsock, network
-├── containers/                    ← Containerfile templates
-│   ├── arch/Containerfile
-│   ├── ubuntu/Containerfile
-│   ├── fedora/Containerfile
-│   └── alpine/Containerfile
-├── build.zig                      ← Zig build system
-└── build.zig.zon                  ← Zig package manifest
-```
-
-## Key decisions
-
-| Decision | Status | Choice |
+| Binary | Target | Description |
 |---|---|---|
-| Language | Decided | Zig — entire stack (host + guest) |
-| Bridge transport | Decided | Custom binary protocol over vsock — pure Zig, no protobuf/gRPC |
-| Config format | Decided | TOML (`lcl.toml`) |
-| Config location | Decided | `~/.config/lcl/<env-name>/` |
-| VM runtime | Decided | Virtualization.framework via ObjC from Zig (no shell execution) |
-| Min macOS version | Decided | macOS 26 (Apple Container requirement) |
-| Min hardware | Decided | Apple Silicon only |
+| `lcl` | macOS arm64 | CLI tool (codesigned with virtualization entitlement) |
+| `lcl-app` | macOS arm64 | GUI terminal app (codesigned) |
+| `lcl-bridge-host` | macOS arm64 | Standalone bridge (test harness) |
+| `lcl-bridge-guest` | Linux aarch64 | Static ELF, multi-call (busybox-style) |
 
-## Phase order
+## Protocols
 
-1. **CLI** — `lcl init`, `lcl start`, `lcl stop` wrapping Apple Container
-2. **Bridge daemon** — host + guest, starting with Keychain + clipboard
-3. **Container images** — Containerfile templates, tested per distro
-4. **Stretch** — GPU, audio, GUI forwarding, SSH agent, multi-env
+### Bridge RPC (port 5000)
+Request/response. 4-byte header: `type(u8) + request_id(u8) + payload_len(u16)`. Payload is TLV fields: `tag(u8) + len(u16) + value`.
 
-## Current status
+Message types: keychain get/set/delete, clipboard get/set, open, notify, okta_get_token.
 
-- [x] Project initialized
-- [x] Design docs written
-- [x] Phase 1: CLI scaffold
-- [x] Phase 2: Bridge daemon
-- [x] Phase 3: Image builder (lwext4)
-- [ ] Phase 4: Stretch goals
+### Shell Stream (port 5001)
+Continuous bidirectional byte stream. 3-byte frame header: `type(u8) + len(u16)`. Frame types: data (0x01), resize (0x02), close (0x03).
+
+## Current Status
+
+- [x] CLI (init, build, start, stop, status, config, shell, destroy)
+- [x] Virtualization.framework bindings (VM lifecycle, vsock, VirtioFS, serial)
+- [x] Bridge daemon (Keychain, clipboard, open URLs, notifications)
+- [x] Image builder (lwext4, HTTP downloads, tar-to-ext4 pipeline, kernel extraction)
+- [x] Terminal app (VT100 parser, CoreText rendering, NSWindow tabs, splits)
+- [x] Shell service (guest PTY daemon, auto-started by systemd)
+- [x] End-to-end: lcl-app boots Arch ARM VM, connects shell, renders terminal
+
+## TODO
+
+- [ ] Alpine support (needs custom initramfs with ext4 modules)
+- [ ] Window resize → shell resize propagation in GUI app
+- [ ] Multiple environments (currently hardcoded to "dev")
+- [ ] Clipboard integration in GUI (Cmd+C/V → bridge)
+- [ ] VM lifecycle controls in GUI (start/stop/build from menu)
+- [ ] Clean shutdown (stop VM gracefully on app quit)
+- [ ] Memory leak cleanup in buildVmConfig
+- [ ] GPU passthrough (Virtio GPU)
+- [ ] Audio passthrough
+- [ ] SSH agent forwarding
+- [ ] VPN/network proxy transparency
