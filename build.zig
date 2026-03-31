@@ -331,6 +331,9 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "cell", .module = cell_mod },
             .{ .name = "parser", .module = parser_mod },
+            .{ .name = "shell_protocol", .module = shell_protocol_mod },
+            .{ .name = "vz", .module = vz_mod },
+            .{ .name = "objc", .module = objc_mod },
         },
     });
 
