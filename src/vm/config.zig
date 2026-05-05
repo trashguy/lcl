@@ -30,16 +30,23 @@ pub fn buildVmConfig(
     vm_config.setPlatform(platform.obj);
 
     // Boot loader
+    // NSString/NSURL copy the bytes, so each path can be freed once the
+    // corresponding ObjC object has been constructed.
     const kernel_path = std.fs.path.joinZ(allocator, &.{ config_dir, lcl.environment.kernel }) catch
         return error.KernelNotFound;
+    defer allocator.free(kernel_path);
     const kernel_url = objc.nsURL(kernel_path);
     var boot_loader = vz.LinuxBootLoader.initWithKernelURL(kernel_url);
-    boot_loader.setCommandLine(allocator.dupeZ(u8, lcl.environment.cmdline) catch
-        return error.KernelNotFound);
+
+    const cmdline_z = allocator.dupeZ(u8, lcl.environment.cmdline) catch
+        return error.KernelNotFound;
+    defer allocator.free(cmdline_z);
+    boot_loader.setCommandLine(cmdline_z);
 
     if (lcl.environment.initrd) |initrd| {
         const initrd_path = std.fs.path.joinZ(allocator, &.{ config_dir, initrd }) catch
             return error.KernelNotFound;
+        defer allocator.free(initrd_path);
         boot_loader.setInitialRamdiskURL(objc.nsURL(initrd_path));
     }
 
@@ -52,6 +59,7 @@ pub fn buildVmConfig(
     // Block storage (rootfs)
     const rootfs_path = std.fs.path.joinZ(allocator, &.{ config_dir, lcl.environment.rootfs }) catch
         return error.RootfsNotFound;
+    defer allocator.free(rootfs_path);
     const block_dev = try devices.createBlockDevice(objc.nsURL(rootfs_path));
     vm_config.setStorageDevices(devices.singletonArray(block_dev.obj));
 
@@ -66,8 +74,8 @@ pub fn buildVmConfig(
     // VirtioFS home mount
     if (lcl.mounts.home) {
         const home = std.posix.getenv("HOME") orelse "/Users";
-        const home_z: [*:0]const u8 = allocator.dupeZ(u8, home) catch
-            return error.KernelNotFound;
+        const home_z = allocator.dupeZ(u8, home) catch return error.KernelNotFound;
+        defer allocator.free(home_z);
         const fs = devices.createVirtioFS("homefs", home_z, false);
         vm_config.setDirectorySharingDevices(devices.singletonArray(fs.obj));
     }
