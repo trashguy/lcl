@@ -67,3 +67,10 @@ pub fn singletonArray(item: objc.id) objc.id {
     objc.arrayAddObject(arr, item);
     return arr;
 }
+
+/// Wrap multiple items into an NSArray.
+pub fn arrayOf(items: []const objc.id) objc.id {
+    const arr = objc.nsMutableArray();
+    for (items) |item| objc.arrayAddObject(arr, item);
+    return arr;
+}

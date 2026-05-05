@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.lcl.ssh-load</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/ssh-add</string>
+        <string>--apple-load-keychain</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/lcl-ssh-load.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/lcl-ssh-load.log</string>
+</dict>
+</plist>

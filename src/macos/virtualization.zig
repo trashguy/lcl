@@ -400,6 +400,11 @@ pub const VirtioSocketConnection = struct {
         return self.fileDescriptorValue();
     }
 
+    /// -[VZVirtioSocketConnection destinationPort]
+    pub fn destinationPort(self: VirtioSocketConnection) u32 {
+        return objc.msgSend(u32, self.obj, objc.sel("destinationPort"), .{});
+    }
+
     /// -[VZVirtioSocketConnection close]
     pub fn close(self: VirtioSocketConnection) void {
         objc.msgSend(void, self.obj, objc.sel("close"), .{});
@@ -414,7 +419,23 @@ pub const VirtioSocketConnection = struct {
 
 pub const ConnectionCallback = *const fn (VirtioSocketConnection) void;
 
-var global_connection_callback: ?ConnectionCallback = null;
+const PortCallback = struct { port: u32, callback: ConnectionCallback };
+var port_callbacks: [8]PortCallback = undefined;
+var port_callback_count: u8 = 0;
+
+fn setCallbackForPort(port: u32, callback: ConnectionCallback) void {
+    // Replace existing entry for this port, or append.
+    for (port_callbacks[0..port_callback_count]) |*entry| {
+        if (entry.port == port) {
+            entry.callback = callback;
+            return;
+        }
+    }
+    if (port_callback_count < port_callbacks.len) {
+        port_callbacks[port_callback_count] = .{ .port = port, .callback = callback };
+        port_callback_count += 1;
+    }
+}
 
 /// The ObjC method implementation for
 /// -[LCLSocketDelegate listener:shouldAcceptNewConnection:fromSocketDevice:]
@@ -425,20 +446,25 @@ fn socketDelegateShouldAccept(
     connection: objc.id, // VZVirtioSocketConnection
     _: objc.id, // socketDevice
 ) callconv(.c) objc.BOOL {
-    if (global_connection_callback) |cb| {
-        // Retain the connection so it stays alive after this callback returns
-        _ = objc.retain(connection);
-        cb(.{ .obj = connection });
+    const conn = VirtioSocketConnection{ .obj = connection };
+    const port = conn.destinationPort();
+    for (port_callbacks[0..port_callback_count]) |entry| {
+        if (entry.port == port) {
+            // Retain the connection so it stays alive after this callback returns
+            _ = objc.retain(connection);
+            entry.callback(conn);
+            return objc.YES;
+        }
     }
-    return objc.YES;
+    return objc.NO;
 }
 
 var delegate_class_registered: bool = false;
 
-/// Create a VZVirtioSocketListener with a Zig callback for incoming connections.
-/// The callback is invoked on the CFRunLoop (main) thread.
-pub fn createSocketListenerWithCallback(callback: ConnectionCallback) VirtioSocketListener {
-    global_connection_callback = callback;
+/// Create a VZVirtioSocketListener wired to invoke `callback` for connections
+/// on `port`. The callback runs on the CFRunLoop (main) thread.
+pub fn createSocketListenerWithCallback(callback: ConnectionCallback, port: u32) VirtioSocketListener {
+    setCallbackForPort(port, callback);
 
     // Register the delegate class once
     if (!delegate_class_registered) {
@@ -500,6 +526,6 @@ test "VZVirtioSocketListener class exists" {
 test "LCLSocketDelegate can be created" {
     const listener = createSocketListenerWithCallback(&struct {
         fn cb(_: VirtioSocketConnection) void {}
-    }.cb);
+    }.cb, 5000);
     try std.testing.expect(listener.obj != @as(?objc.id, null));
 }

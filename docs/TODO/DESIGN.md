@@ -92,5 +92,5 @@ Continuous bidirectional byte stream. 3-byte frame header: `type(u8) + len(u16)`
 - [x] Memory leak cleanup in buildVmConfig
 - [ ] GPU passthrough (Virtio GPU)
 - [ ] Audio passthrough
-- [ ] SSH agent forwarding
+- [x] SSH agent forwarding (vsock 5002 relay + ~/.ssh virtiofs mount + Keychain LaunchAgent)
 - [ ] VPN/network proxy transparency

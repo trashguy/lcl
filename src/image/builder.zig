@@ -201,6 +201,9 @@ fn installGuestBinary(allocator: std.mem.Allocator, mount_point: []const u8) !vo
     // Write init script to start the shell service on boot
     // Works for both Alpine (OpenRC) and Arch (systemd)
     writeShellServiceInit(mount_point) catch {};
+    writeSshAgentInit(mount_point) catch {};
+    writeSshAgentEnv(mount_point) catch {};
+    writeSshConfigMount(mount_point) catch {};
 }
 
 fn writeShellServiceInit(mount_point: []const u8) !void {
@@ -257,6 +260,122 @@ fn writeShellServiceInit(mount_point: []const u8) !void {
     ext4.dirMk(wants_dir) catch {};
     const wants_link = std.fmt.bufPrintZ(&path_buf, "{s}etc/systemd/system/multi-user.target.wants/lcl-shell.service", .{mount_point}) catch return;
     ext4.symlink("/etc/systemd/system/lcl-shell.service", wants_link) catch {};
+}
+
+fn writeSshAgentInit(mount_point: []const u8) !void {
+    var path_buf: [512]u8 = undefined;
+
+    // OpenRC init script (Alpine)
+    const openrc_script =
+        \\#!/sbin/openrc-run
+        \\name="lcl-ssh-agent"
+        \\description="LCL SSH agent forwarder (vsock 5002 -> /run/lcl/ssh-agent.sock)"
+        \\command="/usr/local/bin/lcl-bridge-guest"
+        \\command_args="ssh-agent"
+        \\command_background=true
+        \\pidfile="/run/${RC_SVCNAME}.pid"
+        \\
+    ;
+    const openrc_path = std.fmt.bufPrintZ(&path_buf, "{s}etc/init.d/lcl-ssh-agent", .{mount_point}) catch return;
+    ext4.writeFile(openrc_path, openrc_script) catch {};
+    ext4.modeSet(openrc_path, 0o755) catch {};
+
+    const runlevel_link = std.fmt.bufPrintZ(&path_buf, "{s}etc/runlevels/default/lcl-ssh-agent", .{mount_point}) catch return;
+    ext4.symlink("/etc/init.d/lcl-ssh-agent", runlevel_link) catch {};
+
+    // Systemd unit (Arch)
+    const systemd_unit =
+        \\[Unit]
+        \\Description=LCL SSH Agent Forwarder
+        \\After=network.target
+        \\
+        \\[Service]
+        \\Type=simple
+        \\ExecStart=/usr/local/bin/lcl-bridge-guest ssh-agent
+        \\Restart=always
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+        \\
+    ;
+    const unit_path = std.fmt.bufPrintZ(&path_buf, "{s}etc/systemd/system/lcl-ssh-agent.service", .{mount_point}) catch return;
+    ext4.writeFile(unit_path, systemd_unit) catch {};
+    ext4.modeSet(unit_path, 0o644) catch {};
+
+    const wants_link = std.fmt.bufPrintZ(&path_buf, "{s}etc/systemd/system/multi-user.target.wants/lcl-ssh-agent.service", .{mount_point}) catch return;
+    ext4.symlink("/etc/systemd/system/lcl-ssh-agent.service", wants_link) catch {};
+}
+
+fn writeSshConfigMount(mount_point: []const u8) !void {
+    var path_buf: [512]u8 = undefined;
+
+    // Make sure /root/.ssh exists as a mount point. If the dir already
+    // exists ext4.dirMk silently no-ops.
+    const root_dir = std.fmt.bufPrintZ(&path_buf, "{s}root", .{mount_point}) catch return;
+    ext4.dirMk(root_dir) catch {};
+    const ssh_dir = std.fmt.bufPrintZ(&path_buf, "{s}root/.ssh", .{mount_point}) catch return;
+    ext4.dirMk(ssh_dir) catch {};
+    ext4.modeSet(ssh_dir, 0o700) catch {};
+
+    // OpenRC init script (Alpine) — mount before lcl-shell starts.
+    const openrc_script =
+        \\#!/sbin/openrc-run
+        \\name="lcl-ssh-mount"
+        \\description="Mount host ~/.ssh via virtiofs"
+        \\depend() { before lcl-shell; }
+        \\start() {
+        \\    mkdir -p /root/.ssh
+        \\    mount -t virtiofs ssh-config /root/.ssh -o ro 2>/dev/null
+        \\}
+        \\stop() { umount /root/.ssh 2>/dev/null; }
+        \\
+    ;
+    const openrc_path = std.fmt.bufPrintZ(&path_buf, "{s}etc/init.d/lcl-ssh-mount", .{mount_point}) catch return;
+    ext4.writeFile(openrc_path, openrc_script) catch {};
+    ext4.modeSet(openrc_path, 0o755) catch {};
+
+    const runlevel_link = std.fmt.bufPrintZ(&path_buf, "{s}etc/runlevels/default/lcl-ssh-mount", .{mount_point}) catch return;
+    ext4.symlink("/etc/init.d/lcl-ssh-mount", runlevel_link) catch {};
+
+    // Systemd unit (Arch) — oneshot mount, runs before multi-user.target.
+    const systemd_unit =
+        \\[Unit]
+        \\Description=Mount host ~/.ssh via virtiofs
+        \\Before=lcl-shell.service lcl-ssh-agent.service
+        \\
+        \\[Service]
+        \\Type=oneshot
+        \\RemainAfterExit=yes
+        \\ExecStartPre=/bin/mkdir -p /root/.ssh
+        \\ExecStart=/bin/mount -t virtiofs ssh-config /root/.ssh -o ro
+        \\ExecStop=/bin/umount /root/.ssh
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+        \\
+    ;
+    const unit_path = std.fmt.bufPrintZ(&path_buf, "{s}etc/systemd/system/lcl-ssh-mount.service", .{mount_point}) catch return;
+    ext4.writeFile(unit_path, systemd_unit) catch {};
+    ext4.modeSet(unit_path, 0o644) catch {};
+
+    const wants_link = std.fmt.bufPrintZ(&path_buf, "{s}etc/systemd/system/multi-user.target.wants/lcl-ssh-mount.service", .{mount_point}) catch return;
+    ext4.symlink("/etc/systemd/system/lcl-ssh-mount.service", wants_link) catch {};
+}
+
+fn writeSshAgentEnv(mount_point: []const u8) !void {
+    var path_buf: [512]u8 = undefined;
+    const profile_dir = std.fmt.bufPrintZ(&path_buf, "{s}etc/profile.d", .{mount_point}) catch return;
+    ext4.dirMk(profile_dir) catch {};
+
+    const env_script =
+        \\# Auto-generated by LCL image builder.
+        \\# Routes guest SSH agent requests to the macOS host's ssh-agent.
+        \\export SSH_AUTH_SOCK=/run/lcl/ssh-agent.sock
+        \\
+    ;
+    const env_path = std.fmt.bufPrintZ(&path_buf, "{s}etc/profile.d/lcl.sh", .{mount_point}) catch return;
+    ext4.writeFile(env_path, env_script) catch {};
+    ext4.modeSet(env_path, 0o644) catch {};
 }
 
 /// Update the cmdline in lcl.toml.

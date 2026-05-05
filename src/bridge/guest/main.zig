@@ -14,6 +14,7 @@
 const std = @import("std");
 const protocol = @import("protocol");
 const shell_service = @import("shell_service");
+const ssh_agent_service = @import("ssh_agent_service");
 
 
 // ── vsock constants (Linux) ─────────────────────────────────────────
@@ -82,6 +83,8 @@ fn resolveCommand(name: []const u8) ?CommandFn {
         return &cmdNotify;
     if (std.mem.eql(u8, name, "shell-service"))
         return &cmdShellService;
+    if (std.mem.eql(u8, name, "ssh-agent"))
+        return &cmdSshAgent;
     if (std.mem.eql(u8, name, "help") or std.mem.eql(u8, name, "--help"))
         return &cmdHelp;
     return null;
@@ -101,6 +104,7 @@ fn printUsage() void {
         \\  open <url|path>        Open URL or file on macOS
         \\  notify                 Post a macOS notification
         \\  shell-service          Start PTY shell daemon (vsock port 5001)
+        \\  ssh-agent              Forward host SSH agent (binds /run/lcl/ssh-agent.sock)
         \\  help                   Show this help
         \\
     ) catch {};
@@ -113,6 +117,10 @@ fn stderrPrint(comptime fmt: []const u8, args: anytype) !void {
 
 fn cmdShellService(_: std.mem.Allocator, _: []const []const u8) !void {
     try shell_service.run();
+}
+
+fn cmdSshAgent(_: std.mem.Allocator, _: []const []const u8) !void {
+    try ssh_agent_service.run();
 }
 
 fn cmdHelp(_: std.mem.Allocator, _: []const []const u8) !void {

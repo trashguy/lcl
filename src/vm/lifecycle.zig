@@ -106,7 +106,7 @@ fn setupBridgeListener(machine: vz.VirtualMachine, config: bridge_handler.Bridge
         return;
     };
 
-    const listener = vz.createSocketListenerWithCallback(&onBridgeConnection);
+    const listener = vz.createSocketListenerWithCallback(&onBridgeConnection, bridge_port);
     socket_device.setSocketListener(listener, bridge_port);
 }
 

@@ -387,6 +387,12 @@ pub fn build(b: *std.Build) void {
     });
     splits_mod.linkFramework("AppKit", .{});
 
+    const ssh_agent_host_mod = b.createModule(.{
+        .root_source_file = b.path("src/bridge/host/ssh_agent.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const lcl_app_mod = b.createModule(.{
         .root_source_file = b.path("src/app/main.zig"),
         .target = target,
@@ -410,6 +416,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "vm_config", .module = vm_config_mod },
             .{ .name = "lifecycle", .module = lifecycle_mod },
             .{ .name = "devices", .module = devices_mod },
+            .{ .name = "bridge_handler", .module = bridge_handler_mod },
+            .{ .name = "ssh_agent_host", .module = ssh_agent_host_mod },
         },
     });
     lcl_app_mod.linkFramework("AppKit", .{});
@@ -464,6 +472,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const ssh_agent_guest_mod = b.createModule(.{
+        .root_source_file = b.path("src/bridge/guest/ssh_agent.zig"),
+        .target = guest_target,
+        .optimize = optimize,
+    });
+
     const bridge_guest_mod = b.createModule(.{
         .root_source_file = b.path("src/bridge/guest/main.zig"),
         .target = guest_target,
@@ -471,6 +485,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "protocol", .module = protocol_guest_mod },
             .{ .name = "shell_service", .module = shell_service_mod },
+            .{ .name = "ssh_agent_service", .module = ssh_agent_guest_mod },
         },
     });
 

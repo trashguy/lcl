@@ -71,13 +71,30 @@ pub fn buildVmConfig(
     const vsock = devices.createVsock();
     vm_config.setSocketDevices(devices.singletonArray(vsock.obj));
 
-    // VirtioFS home mount
+    // VirtioFS shares — collect into a single array; VZ requires unique tags.
+    var shares: [4]objc.id = undefined;
+    var share_count: usize = 0;
+
     if (lcl.mounts.home) {
         const home = std.posix.getenv("HOME") orelse "/Users";
         const home_z = allocator.dupeZ(u8, home) catch return error.KernelNotFound;
         defer allocator.free(home_z);
         const fs = devices.createVirtioFS("homefs", home_z, false);
-        vm_config.setDirectorySharingDevices(devices.singletonArray(fs.obj));
+        shares[share_count] = fs.obj;
+        share_count += 1;
+    }
+
+    // Always expose the host's ~/.ssh read-only at the "ssh-config" tag so
+    // guests can pick up Host aliases, known_hosts, and *.pub files.
+    if (sshDirPath(allocator)) |ssh_path| {
+        defer allocator.free(ssh_path);
+        const fs = devices.createVirtioFS("ssh-config", ssh_path, true);
+        shares[share_count] = fs.obj;
+        share_count += 1;
+    }
+
+    if (share_count > 0) {
+        vm_config.setDirectorySharingDevices(devices.arrayOf(shares[0..share_count]));
     }
 
     // Entropy
@@ -95,4 +112,19 @@ pub fn buildVmConfig(
     }
 
     return vm_config;
+}
+
+/// Returns a heap-allocated null-terminated path to "$HOME/.ssh" if it
+/// exists and is a directory, else null. Caller frees.
+fn sshDirPath(allocator: std.mem.Allocator) ?[:0]u8 {
+    const home = std.posix.getenv("HOME") orelse return null;
+    const path = std.fs.path.joinZ(allocator, &.{ home, ".ssh" }) catch return null;
+    errdefer allocator.free(path);
+
+    var dir = std.fs.openDirAbsoluteZ(path, .{}) catch {
+        allocator.free(path);
+        return null;
+    };
+    dir.close();
+    return path;
 }

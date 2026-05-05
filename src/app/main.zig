@@ -13,6 +13,8 @@ const vz = @import("vz");
 const config = @import("config");
 const toml = @import("toml");
 const vm_config = @import("vm_config");
+const bridge_handler = @import("bridge_handler");
+const ssh_agent = @import("ssh_agent_host");
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var global_grid: ?cell_mod.CellGrid = null;
@@ -97,8 +99,11 @@ fn bootVm(allocator: std.mem.Allocator) void {
     global_machine = machine;
 
     if (vz.VirtioSocketDevice.fromVirtualMachine(machine)) |sd| {
-        const listener = vz.createSocketListenerWithCallback(&onBridge);
-        sd.setSocketListener(listener, 5000);
+        const bridge_listener = vz.createSocketListenerWithCallback(&onBridge, 5000);
+        sd.setSocketListener(bridge_listener, 5000);
+
+        const agent_listener = vz.createSocketListenerWithCallback(&onSshAgent, ssh_agent.ssh_agent_port);
+        sd.setSocketListener(agent_listener, ssh_agent.ssh_agent_port);
     }
 
     startMachine(machine);
@@ -230,7 +235,21 @@ fn updateTitle() void {
 
 // ── Bridge / shell connection ───────────────────────────────────────
 
-fn onBridge(conn: vz.VirtioSocketConnection) void { _ = conn; }
+fn onBridge(conn: vz.VirtioSocketConnection) void {
+    const fd = conn.readFd();
+    _ = std.Thread.spawn(.{}, bridgeThread, .{fd}) catch {
+        std.posix.close(fd);
+    };
+}
+
+fn bridgeThread(fd: std.posix.fd_t) void {
+    bridge_handler.handleConnection(fd, fd, .{});
+    std.posix.close(fd);
+}
+
+fn onSshAgent(conn: vz.VirtioSocketConnection) void {
+    ssh_agent.handleConnection(conn.readFd());
+}
 
 var connect_attempts: u32 = 0;
 const CBFn = fn (*anyopaque) callconv(.c) void;
