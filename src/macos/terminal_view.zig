@@ -14,6 +14,18 @@ var global_font: ?*const coretext.FontInfo = null;
 var global_input_callback: ?*const fn ([]const u8) void = null;
 var view_class_registered: bool = false;
 
+var default_fg: coretext.Rgb = .{ .r = 0.0, .g = 1.0, .b = 0.0 };
+var default_bg: coretext.Rgb = .{ .r = 0.0, .g = 0.0, .b = 0.0 };
+
+pub fn setDefaultColors(fg: coretext.Rgb, bg: coretext.Rgb) void {
+    default_fg = fg;
+    default_bg = bg;
+}
+
+pub fn setFont(font: *const coretext.FontInfo) void {
+    global_font = font;
+}
+
 extern "c" fn objc_allocateClassPair(superclass: ?objc.Class, name: [*:0]const u8, extra_bytes: usize) ?objc.Class;
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -90,9 +102,6 @@ fn viewDrawRect(_: *const anyopaque, _: objc.SEL, _: objc.NSRect) callconv(.c) v
     const gfx_ctx = objc.msgSend(?objc.id, NSGraphicsContext, objc.sel("currentContext"), .{});
     if (gfx_ctx == null) return;
     const cg_ctx: coretext.CGContextRef = @ptrCast(objc.msgSend(objc.id, gfx_ctx.?, objc.sel("CGContext"), .{}));
-
-    const default_fg = coretext.Rgb{ .r = 0.0, .g = 1.0, .b = 0.0 };
-    const default_bg = coretext.Rgb{ .r = 0.0, .g = 0.0, .b = 0.0 };
 
     // Fill background
     const full_rect = objc.NSRect{
@@ -246,9 +255,9 @@ fn handleSelectAll(grid: *cell_mod.CellGrid, view: objc.id) void {
 
 // ── Color helpers ───────────────────────────────────────────────────
 
-fn colorToRgb(color: cell_mod.Color, reverse: bool, default_fg: coretext.Rgb, default_bg: coretext.Rgb, is_bg: bool) coretext.Rgb {
+fn colorToRgb(color: cell_mod.Color, reverse: bool, fg: coretext.Rgb, bg: coretext.Rgb, is_bg: bool) coretext.Rgb {
     const effective = if (reverse) !is_bg else is_bg;
-    const def = if (effective) default_bg else default_fg;
+    const def = if (effective) bg else fg;
 
     return switch (color) {
         .default => def,

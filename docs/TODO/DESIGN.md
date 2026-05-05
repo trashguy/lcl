@@ -93,4 +93,5 @@ Continuous bidirectional byte stream. 3-byte frame header: `type(u8) + len(u16)`
 - [ ] GPU passthrough (Virtio GPU)
 - [ ] Audio passthrough
 - [x] SSH agent forwarding (vsock 5002 relay + ~/.ssh virtiofs mount + Keychain LaunchAgent)
+- [x] Settings panel (Cmd+, — Appearance + VM tabs, TOML round-trip, live-apply)
 - [ ] VPN/network proxy transparency

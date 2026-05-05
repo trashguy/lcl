@@ -22,6 +22,7 @@ const Table = enum {
     mounts,
     bridge,
     setup,
+    appearance,
 };
 
 /// Parse TOML content into an LclConfig.
@@ -108,6 +109,25 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) ParseError!ParsedC
                     config.setup.dotfiles = try parseString(allocator, raw_value);
                 } else return error.UnknownKey;
             },
+            .appearance => {
+                if (std.mem.eql(u8, key, "font")) {
+                    config.appearance.font = try parseString(allocator, raw_value);
+                } else if (std.mem.eql(u8, key, "font_size")) {
+                    config.appearance.font_size = try parseFloat(raw_value);
+                } else if (std.mem.eql(u8, key, "fg_r")) {
+                    config.appearance.fg_r = try parseFloat(raw_value);
+                } else if (std.mem.eql(u8, key, "fg_g")) {
+                    config.appearance.fg_g = try parseFloat(raw_value);
+                } else if (std.mem.eql(u8, key, "fg_b")) {
+                    config.appearance.fg_b = try parseFloat(raw_value);
+                } else if (std.mem.eql(u8, key, "bg_r")) {
+                    config.appearance.bg_r = try parseFloat(raw_value);
+                } else if (std.mem.eql(u8, key, "bg_g")) {
+                    config.appearance.bg_g = try parseFloat(raw_value);
+                } else if (std.mem.eql(u8, key, "bg_b")) {
+                    config.appearance.bg_b = try parseFloat(raw_value);
+                } else return error.UnknownKey;
+            },
         }
     }
 
@@ -129,6 +149,10 @@ fn parseString(allocator: std.mem.Allocator, raw: []const u8) ParseError![]const
 
 fn parseUint(raw: []const u8) ParseError!u32 {
     return std.fmt.parseInt(u32, raw, 10) catch return error.InvalidInteger;
+}
+
+fn parseFloat(raw: []const u8) ParseError!f32 {
+    return std.fmt.parseFloat(f32, raw) catch return error.InvalidValue;
 }
 
 fn parseBool(raw: []const u8) ParseError!bool {

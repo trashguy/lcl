@@ -15,6 +15,7 @@ const toml = @import("toml");
 const vm_config = @import("vm_config");
 const bridge_handler = @import("bridge_handler");
 const ssh_agent = @import("ssh_agent_host");
+const settings = @import("settings");
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var global_grid: ?cell_mod.CellGrid = null;
@@ -47,6 +48,7 @@ fn registerAppDelegate() objc.Class {
     _ = objc.addMethod(cls, objc.sel("vmForceStop:"), @ptrCast(&vmForceStopAction), "v@:@");
     _ = objc.addMethod(cls, objc.sel("vmRestart:"), @ptrCast(&vmRestartAction), "v@:@");
     _ = objc.addMethod(cls, objc.sel("validateMenuItem:"), @ptrCast(&validateMenuItem), "c@:@");
+    _ = objc.addMethod(cls, objc.sel("openSettings:"), @ptrCast(&openSettingsAction), "v@:@");
     objc.registerClass(cls);
     return objc.getClass("LCLAppDelegate") orelse @panic("Not found");
 }
@@ -54,7 +56,17 @@ fn registerAppDelegate() objc.Class {
 fn appDidFinishLaunching(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) void {
     const allocator = gpa.allocator();
 
-    global_font = coretext.createFont("Menlo", 14.0);
+    settings.init(allocator, "dev");
+    settings.on_appearance_changed = &applyAppearance;
+
+    const initial_appearance = readAppearance(allocator);
+
+    global_font = coretext.createFont(toCString(initial_appearance.font), initial_appearance.font_size);
+    terminal_view.setDefaultColors(
+        .{ .r = initial_appearance.fg_r, .g = initial_appearance.fg_g, .b = initial_appearance.fg_b },
+        .{ .r = initial_appearance.bg_r, .g = initial_appearance.bg_g, .b = initial_appearance.bg_b },
+    );
+
     global_grid = cell_mod.CellGrid.init(allocator, 80, 24) catch return;
     global_parser = .{ .grid = &global_grid.? };
 
@@ -330,4 +342,60 @@ fn shouldTerminateApp(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c)
     if (!m.canStop()) return NSTerminateNow;
     m.stopWithCompletionHandler(@ptrCast(&quit_stop_block));
     return NSTerminateLater;
+}
+
+// ── Settings ────────────────────────────────────────────────────────
+
+fn openSettingsAction(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) void {
+    settings.show();
+}
+
+/// Read appearance from disk, returning defaults if anything goes wrong.
+fn readAppearance(allocator: std.mem.Allocator) config.LclConfig.Appearance {
+    const dir = config.configPath(allocator, "dev") catch return .{};
+    defer allocator.free(dir);
+    const path = std.fs.path.join(allocator, &.{ dir, "lcl.toml" }) catch return .{};
+    defer allocator.free(path);
+    const data = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return .{};
+    defer allocator.free(data);
+    var parsed = toml.parse(allocator, data) catch return .{};
+    defer parsed.deinit();
+    // Duplicate the font name so it survives parsed.deinit().
+    const font_dup = allocator.dupe(u8, parsed.config.appearance.font) catch return .{};
+    return .{
+        .font = font_dup,
+        .font_size = parsed.config.appearance.font_size,
+        .fg_r = parsed.config.appearance.fg_r,
+        .fg_g = parsed.config.appearance.fg_g,
+        .fg_b = parsed.config.appearance.fg_b,
+        .bg_r = parsed.config.appearance.bg_r,
+        .bg_g = parsed.config.appearance.bg_g,
+        .bg_b = parsed.config.appearance.bg_b,
+    };
+}
+
+fn applyAppearance(a: config.LclConfig.Appearance) void {
+    // Rebuild font with new name + size; update cached pointer used by the view.
+    var name_buf: [256:0]u8 = undefined;
+    const len = @min(a.font.len, name_buf.len);
+    @memcpy(name_buf[0..len], a.font[0..len]);
+    name_buf[len] = 0;
+
+    global_font = coretext.createFont(@ptrCast(&name_buf), a.font_size);
+    terminal_view.setFont(&global_font.?);
+    terminal_view.setDefaultColors(
+        .{ .r = a.fg_r, .g = a.fg_g, .b = a.fg_b },
+        .{ .r = a.bg_r, .g = a.bg_g, .b = a.bg_b },
+    );
+    if (global_view) |v| terminal_view.setNeedsDisplay(v);
+}
+
+/// Convert a Zig slice to a null-terminated C string in a static buffer.
+/// Caller must use the returned pointer immediately (next call clobbers).
+var c_string_buf: [256:0]u8 = undefined;
+fn toCString(s: []const u8) [*:0]const u8 {
+    const len = @min(s.len, c_string_buf.len);
+    @memcpy(c_string_buf[0..len], s[0..len]);
+    c_string_buf[len] = 0;
+    return @ptrCast(&c_string_buf);
 }

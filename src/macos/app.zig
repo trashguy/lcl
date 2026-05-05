@@ -51,6 +51,13 @@ fn setupMenuBar(app: objc.id, delegate: objc.id) void {
     });
     objc.msgSend(void, app_menu_item, objc.sel("setSubmenu:"), .{app_menu});
 
+    // Settings… (Cmd+,)
+    addMenuItem(app_menu, "Settings…", "openSettings:", ",", delegate);
+
+    // Separator
+    const sep = objc.msgSend(objc.id, NSMenuItem, objc.sel("separatorItem"), .{});
+    objc.msgSend(void, app_menu, objc.sel("addItem:"), .{sep});
+
     // Quit item (Cmd+Q)
     addMenuItem(app_menu, "Quit LCL", "terminate:", "q", null);
 

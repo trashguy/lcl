@@ -8,6 +8,7 @@ pub const LclConfig = struct {
     mounts: Mounts = .{},
     bridge: Bridge = .{},
     setup: Setup = .{},
+    appearance: Appearance = .{},
 
     pub const Environment = struct {
         name: []const u8 = "dev",
@@ -36,6 +37,17 @@ pub const LclConfig = struct {
     pub const Setup = struct {
         packages: []const []const u8 = &.{},
         dotfiles: ?[]const u8 = null,
+    };
+
+    pub const Appearance = struct {
+        font: []const u8 = "Menlo",
+        font_size: f32 = 14.0,
+        fg_r: f32 = 0.0,
+        fg_g: f32 = 1.0,
+        fg_b: f32 = 0.0,
+        bg_r: f32 = 0.0,
+        bg_g: f32 = 0.0,
+        bg_b: f32 = 0.0,
     };
 };
 
@@ -73,6 +85,16 @@ pub fn serialize(config: LclConfig, writer: anytype) !void {
     if (config.setup.dotfiles) |dotfiles| {
         try writeString(writer, "dotfiles", dotfiles);
     }
+
+    try writer.writeAll("\n[appearance]\n");
+    try writeString(writer, "font", config.appearance.font);
+    try writeFloat(writer, "font_size", config.appearance.font_size);
+    try writeFloat(writer, "fg_r", config.appearance.fg_r);
+    try writeFloat(writer, "fg_g", config.appearance.fg_g);
+    try writeFloat(writer, "fg_b", config.appearance.fg_b);
+    try writeFloat(writer, "bg_r", config.appearance.bg_r);
+    try writeFloat(writer, "bg_g", config.appearance.bg_g);
+    try writeFloat(writer, "bg_b", config.appearance.bg_b);
 }
 
 fn writeString(writer: anytype, key: []const u8, value: []const u8) !void {
@@ -85,6 +107,10 @@ fn writeInt(writer: anytype, key: []const u8, value: u32) !void {
 
 fn writeBool(writer: anytype, key: []const u8, value: bool) !void {
     try writer.print("{s} = {s}\n", .{ key, if (value) "true" else "false" });
+}
+
+fn writeFloat(writer: anytype, key: []const u8, value: f32) !void {
+    try writer.print("{s} = {d:.4}\n", .{ key, value });
 }
 
 fn writeStringArray(writer: anytype, key: []const u8, values: []const []const u8) !void {

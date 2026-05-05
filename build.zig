@@ -393,6 +393,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const settings_mod = b.createModule(.{
+        .root_source_file = b.path("src/macos/settings.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "objc", .module = objc_mod },
+            .{ .name = "config", .module = config_mod },
+            .{ .name = "toml", .module = toml_mod },
+        },
+    });
+    settings_mod.linkFramework("AppKit", .{});
+    settings_mod.linkFramework("Foundation", .{});
+
     const lcl_app_mod = b.createModule(.{
         .root_source_file = b.path("src/app/main.zig"),
         .target = target,
@@ -418,6 +431,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "devices", .module = devices_mod },
             .{ .name = "bridge_handler", .module = bridge_handler_mod },
             .{ .name = "ssh_agent_host", .module = ssh_agent_host_mod },
+            .{ .name = "settings", .module = settings_mod },
         },
     });
     lcl_app_mod.linkFramework("AppKit", .{});
