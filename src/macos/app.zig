@@ -17,7 +17,7 @@ pub fn runApp(app_delegate_class: objc.Class) noreturn {
     objc.msgSend(void, app, objc.sel("setDelegate:"), .{delegate});
 
     // Build menu bar
-    setupMenuBar(app);
+    setupMenuBar(app, delegate);
 
     // Activate and bring to front
     objc.msgSend(void, app, objc.sel("activateIgnoringOtherApps:"), .{objc.YES});
@@ -34,7 +34,7 @@ pub fn runApp(app_delegate_class: objc.Class) noreturn {
     unreachable;
 }
 
-fn setupMenuBar(app: objc.id) void {
+fn setupMenuBar(app: objc.id, delegate: objc.id) void {
     const NSMenu = objc.getClass("NSMenu") orelse return;
     const NSMenuItem = objc.getClass("NSMenuItem") orelse return;
 
@@ -52,7 +52,7 @@ fn setupMenuBar(app: objc.id) void {
     objc.msgSend(void, app_menu_item, objc.sel("setSubmenu:"), .{app_menu});
 
     // Quit item (Cmd+Q)
-    addMenuItem(app_menu, "Quit LCL", "terminate:", "q");
+    addMenuItem(app_menu, "Quit LCL", "terminate:", "q", null);
 
     // Edit menu (for Cmd+C/V to work)
     const edit_item = objc.init(objc.alloc(NSMenuItem));
@@ -63,9 +63,24 @@ fn setupMenuBar(app: objc.id) void {
     });
     objc.msgSend(void, edit_item, objc.sel("setSubmenu:"), .{edit_menu});
 
-    addMenuItem(edit_menu, "Copy", "copy:", "c");
-    addMenuItem(edit_menu, "Paste", "paste:", "v");
-    addMenuItem(edit_menu, "Select All", "selectAll:", "a");
+    addMenuItem(edit_menu, "Copy", "copy:", "c", null);
+    addMenuItem(edit_menu, "Paste", "paste:", "v", null);
+    addMenuItem(edit_menu, "Select All", "selectAll:", "a", null);
+
+    // VM menu
+    const vm_item = objc.init(objc.alloc(NSMenuItem));
+    objc.msgSend(void, menu_bar, objc.sel("addItem:"), .{vm_item});
+
+    const vm_menu = objc.msgSend(objc.id, objc.alloc(NSMenu), objc.sel("initWithTitle:"), .{
+        objc.nsString("VM"),
+    });
+    objc.msgSend(void, vm_item, objc.sel("setSubmenu:"), .{vm_menu});
+
+    // VM items target the app delegate so validateMenuItem: + actions hit our code
+    addMenuItem(vm_menu, "Start", "vmStart:", "", delegate);
+    addMenuItem(vm_menu, "Stop", "vmStop:", "", delegate);
+    addMenuItem(vm_menu, "Force Stop", "vmForceStop:", "", delegate);
+    addMenuItem(vm_menu, "Restart", "vmRestart:", "r", delegate);
 
     // View menu
     const view_item = objc.init(objc.alloc(NSMenuItem));
@@ -76,8 +91,8 @@ fn setupMenuBar(app: objc.id) void {
     });
     objc.msgSend(void, view_item, objc.sel("setSubmenu:"), .{view_menu});
 
-    addMenuItem(view_menu, "New Tab", "newTab:", "t");
-    addMenuItem(view_menu, "Split Vertical", "splitVertical:", "d");
+    addMenuItem(view_menu, "New Tab", "newTab:", "t", null);
+    addMenuItem(view_menu, "Split Vertical", "splitVertical:", "d", null);
 
     // Window menu
     const window_item = objc.init(objc.alloc(NSMenuItem));
@@ -88,19 +103,20 @@ fn setupMenuBar(app: objc.id) void {
     });
     objc.msgSend(void, window_item, objc.sel("setSubmenu:"), .{window_menu});
 
-    addMenuItem(window_menu, "Minimize", "performMiniaturize:", "m");
-    addMenuItem(window_menu, "Close", "performClose:", "w");
+    addMenuItem(window_menu, "Minimize", "performMiniaturize:", "m", null);
+    addMenuItem(window_menu, "Close", "performClose:", "w", null);
 
     // Tell NSApplication this is the Window menu (enables window list)
     objc.msgSend(void, app, objc.sel("setWindowsMenu:"), .{window_menu});
 }
 
-fn addMenuItem(menu: objc.id, title: [*:0]const u8, action: [*:0]const u8, key: [*:0]const u8) void {
+fn addMenuItem(menu: objc.id, title: [*:0]const u8, action: [*:0]const u8, key: [*:0]const u8, target: ?objc.id) void {
     const NSMenuItem = objc.getClass("NSMenuItem") orelse return;
     const item = objc.msgSend(objc.id, objc.alloc(NSMenuItem), objc.sel("initWithTitle:action:keyEquivalent:"), .{
         objc.nsString(title),
         objc.sel(action),
         objc.nsString(key),
     });
+    if (target) |t| objc.msgSend(void, item, objc.sel("setTarget:"), .{t});
     objc.msgSend(void, menu, objc.sel("addItem:"), .{item});
 }

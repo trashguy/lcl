@@ -19,6 +19,7 @@ var global_grid: ?cell_mod.CellGrid = null;
 var global_parser: ?parser_mod.Parser = null;
 var global_font: ?coretext.FontInfo = null;
 var global_view: ?objc.id = null;
+var global_window: ?objc.id = null;
 var global_shell_fd: ?std.posix.fd_t = null;
 var global_machine: ?vz.VirtualMachine = null;
 
@@ -38,6 +39,12 @@ fn registerAppDelegate() objc.Class {
     const cls = objc.createClass("LCLAppDelegate") orelse @panic("Failed");
     _ = objc.addMethod(cls, objc.sel("applicationDidFinishLaunching:"), @ptrCast(&appDidFinishLaunching), "v@:@");
     _ = objc.addMethod(cls, objc.sel("applicationShouldTerminateAfterLastWindowClosed:"), @ptrCast(&shouldTerminate), "c@:@");
+    _ = objc.addMethod(cls, objc.sel("applicationShouldTerminate:"), @ptrCast(&shouldTerminateApp), "L@:@");
+    _ = objc.addMethod(cls, objc.sel("vmStart:"), @ptrCast(&vmStartAction), "v@:@");
+    _ = objc.addMethod(cls, objc.sel("vmStop:"), @ptrCast(&vmStopAction), "v@:@");
+    _ = objc.addMethod(cls, objc.sel("vmForceStop:"), @ptrCast(&vmForceStopAction), "v@:@");
+    _ = objc.addMethod(cls, objc.sel("vmRestart:"), @ptrCast(&vmRestartAction), "v@:@");
+    _ = objc.addMethod(cls, objc.sel("validateMenuItem:"), @ptrCast(&validateMenuItem), "c@:@");
     objc.registerClass(cls);
     return objc.getClass("LCLAppDelegate") orelse @panic("Not found");
 }
@@ -59,6 +66,7 @@ fn appDidFinishLaunching(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(
     global_view = view;
 
     const win = win_mod.createMainWindow(view, "LCL Terminal");
+    global_window = win;
     objc.msgSend(void, win, objc.sel("center"), .{});
     objc.msgSend(void, win, objc.sel("orderFrontRegardless"), .{});
     objc.msgSend(void, win, objc.sel("makeKeyAndOrderFront:"), .{@as(?objc.id, null)});
@@ -68,11 +76,14 @@ fn appDidFinishLaunching(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(
     objc.msgSend(void, ns_app, objc.sel("activateIgnoringOtherApps:"), .{objc.YES});
 
     bootVm(allocator);
+    schedulePoll();
 }
 
 fn onInput(data: []const u8) void {
     if (global_shell_fd) |fd| shell_protocol.writeData(fd, data) catch {};
 }
+
+// ── VM lifecycle ────────────────────────────────────────────────────
 
 fn bootVm(allocator: std.mem.Allocator) void {
     const config_dir = config.configPath(allocator, "dev") catch return;
@@ -90,21 +101,137 @@ fn bootVm(allocator: std.mem.Allocator) void {
         sd.setSocketListener(listener, 5000);
     }
 
-    const CompFn = fn (*anyopaque, ?objc.id) callconv(.c) void;
-    const CompBlock = objc.Block(CompFn);
-    var desc = objc.blockDescriptor(CompBlock);
-    var block = CompBlock{ .invoke = &vmStarted, .descriptor = &desc };
-    machine.startWithCompletionHandler(@ptrCast(&block));
+    startMachine(machine);
 }
 
-fn onBridge(conn: vz.VirtioSocketConnection) void { _ = conn; }
+fn startMachine(machine: vz.VirtualMachine) void {
+    machine.startWithCompletionHandler(@ptrCast(&start_block));
+}
+
+const StartFn = fn (*anyopaque, ?objc.id) callconv(.c) void;
+const StartBlock = objc.Block(StartFn);
+var start_desc = objc.blockDescriptor(StartBlock);
+var start_block = StartBlock{ .invoke = &vmStarted, .descriptor = &start_desc };
 
 fn vmStarted(_: *anyopaque, err: ?objc.id) callconv(.c) void {
     if (err) |_| return;
+    connect_attempts = 0;
     scheduleShellConnect(5);
 }
 
-// Shell connection
+const StopFn = fn (*anyopaque, ?objc.id) callconv(.c) void;
+const StopBlock = objc.Block(StopFn);
+var force_stop_desc = objc.blockDescriptor(StopBlock);
+var force_stop_block = StopBlock{ .invoke = &vmForceStopped, .descriptor = &force_stop_desc };
+
+fn vmForceStopped(_: *anyopaque, _: ?objc.id) callconv(.c) void {}
+
+var restart_stop_desc = objc.blockDescriptor(StopBlock);
+var restart_stop_block = StopBlock{ .invoke = &vmStoppedForRestart, .descriptor = &restart_stop_desc };
+
+fn vmStoppedForRestart(_: *anyopaque, _: ?objc.id) callconv(.c) void {
+    const m = global_machine orelse return;
+    if (m.canStart()) startMachine(m);
+}
+
+var quit_stop_desc = objc.blockDescriptor(StopBlock);
+var quit_stop_block = StopBlock{ .invoke = &vmStoppedForQuit, .descriptor = &quit_stop_desc };
+
+fn vmStoppedForQuit(_: *anyopaque, _: ?objc.id) callconv(.c) void {
+    const NSApp = objc.getClass("NSApplication") orelse return;
+    const app = objc.msgSend(objc.id, NSApp, objc.sel("sharedApplication"), .{});
+    objc.msgSend(void, app, objc.sel("replyToApplicationShouldTerminate:"), .{objc.YES});
+}
+
+// ── Menu actions ────────────────────────────────────────────────────
+
+fn vmStartAction(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) void {
+    if (global_machine) |m| {
+        if (m.canStart()) startMachine(m);
+    } else {
+        bootVm(gpa.allocator());
+    }
+}
+
+fn vmStopAction(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) void {
+    const m = global_machine orelse return;
+    if (!m.canRequestStop()) return;
+    var err_out: ?objc.id = null;
+    _ = m.requestStopWithError(&err_out);
+}
+
+fn vmForceStopAction(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) void {
+    const m = global_machine orelse return;
+    if (!m.canStop()) return;
+    m.stopWithCompletionHandler(@ptrCast(&force_stop_block));
+}
+
+fn vmRestartAction(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) void {
+    const m = global_machine orelse return;
+    if (!m.canStop()) return;
+    m.stopWithCompletionHandler(@ptrCast(&restart_stop_block));
+}
+
+fn validateMenuItem(_: *const anyopaque, _: objc.SEL, item: objc.id) callconv(.c) objc.BOOL {
+    const action_sel = objc.msgSend(?objc.SEL, item, objc.sel("action"), .{}) orelse return objc.YES;
+    const a = @intFromPtr(action_sel);
+
+    const state: ?vz.VmState = if (global_machine) |m| m.state() else null;
+
+    if (a == @intFromPtr(objc.sel("vmStart:"))) {
+        if (state == null) return objc.YES;
+        return if (state.? == .stopped or state.? == .err) objc.YES else objc.NO;
+    }
+    if (a == @intFromPtr(objc.sel("vmStop:"))) {
+        if (global_machine) |m| return if (m.canRequestStop()) objc.YES else objc.NO;
+        return objc.NO;
+    }
+    if (a == @intFromPtr(objc.sel("vmForceStop:")) or a == @intFromPtr(objc.sel("vmRestart:"))) {
+        if (global_machine) |m| return if (m.canStop()) objc.YES else objc.NO;
+        return objc.NO;
+    }
+    return objc.YES;
+}
+
+// ── Title polling ───────────────────────────────────────────────────
+
+const PollFn = fn (*anyopaque) callconv(.c) void;
+const PollBlock = objc.Block(PollFn);
+var poll_desc = objc.blockDescriptor(PollBlock);
+var poll_block = PollBlock{ .invoke = &doPoll, .descriptor = &poll_desc };
+
+fn schedulePoll() void {
+    dispatch_after(dispatch_time(0, 1_000_000_000), mainQueue(), @ptrCast(&poll_block));
+}
+
+fn doPoll(_: *anyopaque) callconv(.c) void {
+    updateTitle();
+    schedulePoll();
+}
+
+fn updateTitle() void {
+    const win = global_window orelse return;
+    const state: vz.VmState = if (global_machine) |m| m.state() else .stopped;
+    const label = switch (state) {
+        .stopped => "Stopped",
+        .running => "Running",
+        .paused => "Paused",
+        .err => "Error",
+        .starting => "Starting",
+        .stopping => "Stopping",
+        .saving => "Saving",
+        .restoring => "Restoring",
+    };
+    var buf: [128]u8 = undefined;
+    const title = std.fmt.bufPrintZ(&buf, "LCL Terminal — {s}", .{label}) catch return;
+    const ns_str = objc.nsString(title.ptr);
+    objc.msgSend(void, win, objc.sel("setTitle:"), .{ns_str});
+}
+
+// ── Bridge / shell connection ───────────────────────────────────────
+
+fn onBridge(conn: vz.VirtioSocketConnection) void { _ = conn; }
+
 var connect_attempts: u32 = 0;
 const CBFn = fn (*anyopaque) callconv(.c) void;
 const CB = objc.Block(CBFn);
@@ -124,6 +251,10 @@ fn tryConnect(_: *anyopaque) callconv(.c) void {
     connect_attempts += 1;
     if (connect_attempts > 30) return;
     const m = global_machine orelse return;
+    if (m.state() != .running) {
+        scheduleShellConnect(2);
+        return;
+    }
     const sd = vz.VirtioSocketDevice.fromVirtualMachine(m) orelse return;
     sd.connectToPort(shell_protocol.shell_port, @ptrCast(&sc_block));
 }
@@ -151,6 +282,7 @@ fn readShell() void {
             scheduleRedraw();
         }
     }
+    global_shell_fd = null;
 }
 
 const RFn = fn (*anyopaque) callconv(.c) void;
@@ -164,6 +296,19 @@ fn doRedraw(_: *anyopaque) callconv(.c) void {
     if (global_view) |v| terminal_view.setNeedsDisplay(v);
 }
 
+// ── Termination ─────────────────────────────────────────────────────
+
 fn shouldTerminate(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) objc.BOOL {
     return objc.YES;
+}
+
+const NSTerminateCancel: objc.NSUInteger = 0;
+const NSTerminateNow: objc.NSUInteger = 1;
+const NSTerminateLater: objc.NSUInteger = 2;
+
+fn shouldTerminateApp(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) objc.NSUInteger {
+    const m = global_machine orelse return NSTerminateNow;
+    if (!m.canStop()) return NSTerminateNow;
+    m.stopWithCompletionHandler(@ptrCast(&quit_stop_block));
+    return NSTerminateLater;
 }

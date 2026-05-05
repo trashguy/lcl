@@ -87,8 +87,8 @@ Continuous bidirectional byte stream. 3-byte frame header: `type(u8) + len(u16)`
 - [ ] Window resize → shell resize propagation in GUI app
 - [ ] Multiple environments (currently hardcoded to "dev")
 - [x] Clipboard integration in GUI (Cmd+C/V/A, mouse drag-select)
-- [ ] VM lifecycle controls in GUI (start/stop/build from menu)
-- [ ] Clean shutdown (stop VM gracefully on app quit)
+- [x] VM lifecycle controls in GUI (Start/Stop/Force Stop/Restart menu, status in title)
+- [x] Clean shutdown (stop VM gracefully on app quit via NSTerminateLater)
 - [ ] Memory leak cleanup in buildVmConfig
 - [ ] GPU passthrough (Virtio GPU)
 - [ ] Audio passthrough
