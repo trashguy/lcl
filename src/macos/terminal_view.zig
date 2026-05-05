@@ -5,6 +5,7 @@ const objc = @import("objc");
 const coretext = @import("coretext");
 const cell_mod = @import("cell");
 const input = @import("input");
+const pasteboard = @import("pasteboard");
 
 // ── Global state ────────────────────────────────────────────────────
 
@@ -61,6 +62,9 @@ fn ensureViewClass() void {
 
     _ = objc.addMethod(view_cls, objc.sel("drawRect:"), @ptrCast(&viewDrawRect), "v@:{NSRect={NSPoint=dd}{NSSize=dd}}");
     _ = objc.addMethod(view_cls, objc.sel("keyDown:"), @ptrCast(&viewKeyDown), "v@:@");
+    _ = objc.addMethod(view_cls, objc.sel("mouseDown:"), @ptrCast(&viewMouseDown), "v@:@");
+    _ = objc.addMethod(view_cls, objc.sel("mouseDragged:"), @ptrCast(&viewMouseDragged), "v@:@");
+    _ = objc.addMethod(view_cls, objc.sel("mouseUp:"), @ptrCast(&viewMouseUp), "v@:@");
     _ = objc.addMethod(view_cls, objc.sel("acceptsFirstResponder"), @ptrCast(&acceptsFirstResponder), "c@:");
     _ = objc.addMethod(view_cls, objc.sel("isFlipped"), @ptrCast(&isFlipped), "c@:");
 
@@ -109,7 +113,10 @@ fn viewDrawRect(_: *const anyopaque, _: objc.SEL, _: objc.NSRect) callconv(.c) v
             const x = @as(objc.CGFloat, @floatFromInt(col)) * font.cell_width;
             const y = @as(objc.CGFloat, @floatFromInt(row)) * font.cell_height;
 
-            const bg_rgb = colorToRgb(c.bg, c.attrs.reverse, default_fg, default_bg, true);
+            const selected = grid.selection.contains(row, col);
+            const reverse = c.attrs.reverse != selected; // XOR: selection inverts colors
+
+            const bg_rgb = colorToRgb(c.bg, reverse, default_fg, default_bg, true);
             if (bg_rgb.r != default_bg.r or bg_rgb.g != default_bg.g or bg_rgb.b != default_bg.b) {
                 coretext.fillRect(cg_ctx, .{
                     .origin = .{ .x = x, .y = y },
@@ -118,7 +125,7 @@ fn viewDrawRect(_: *const anyopaque, _: objc.SEL, _: objc.NSRect) callconv(.c) v
             }
 
             if (c.char > 0x20) {
-                const fg_rgb = colorToRgb(c.fg, c.attrs.reverse, default_fg, default_bg, false);
+                const fg_rgb = colorToRgb(c.fg, reverse, default_fg, default_bg, false);
                 coretext.drawChar(cg_ctx, c.char, x, y, font, fg_rgb);
             }
         }
@@ -136,7 +143,49 @@ fn viewDrawRect(_: *const anyopaque, _: objc.SEL, _: objc.NSRect) callconv(.c) v
     }
 }
 
-fn viewKeyDown(_: *const anyopaque, _: objc.SEL, event: objc.id) callconv(.c) void {
+fn eventToCell(view: objc.id, event: objc.id) struct { row: u16, col: u16 } {
+    const grid = global_grid.?;
+    const font = global_font.?;
+    const win_pt = objc.msgSend(objc.NSPoint, event, objc.sel("locationInWindow"), .{});
+    const view_pt = objc.msgSend(objc.NSPoint, view, objc.sel("convertPoint:fromView:"), .{ win_pt, @as(?objc.id, null) });
+
+    const col_f = view_pt.x / font.cell_width;
+    const row_f = view_pt.y / font.cell_height;
+    const col_clamped: u16 = if (col_f < 0) 0 else @intFromFloat(@min(col_f, @as(objc.CGFloat, @floatFromInt(grid.cols - 1))));
+    const row_clamped: u16 = if (row_f < 0) 0 else @intFromFloat(@min(row_f, @as(objc.CGFloat, @floatFromInt(grid.rows - 1))));
+    return .{ .row = row_clamped, .col = col_clamped };
+}
+
+fn viewMouseDown(view: *const anyopaque, _: objc.SEL, event: objc.id) callconv(.c) void {
+    const grid = global_grid orelse return;
+    const v: objc.id = @ptrCast(@constCast(view));
+    const cell = eventToCell(v, event);
+    grid.selectionStart(cell.row, cell.col);
+    objc.msgSend(void, v, objc.sel("setNeedsDisplay:"), .{objc.YES});
+}
+
+fn viewMouseDragged(view: *const anyopaque, _: objc.SEL, event: objc.id) callconv(.c) void {
+    const grid = global_grid orelse return;
+    const v: objc.id = @ptrCast(@constCast(view));
+    const cell = eventToCell(v, event);
+    grid.selectionExtend(cell.row, cell.col);
+    objc.msgSend(void, v, objc.sel("setNeedsDisplay:"), .{objc.YES});
+}
+
+fn viewMouseUp(view: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) void {
+    const grid = global_grid orelse return;
+    // Click without drag (anchor == head) clears any prior selection.
+    if (grid.selection.active and
+        grid.selection.anchor_row == grid.selection.head_row and
+        grid.selection.anchor_col == grid.selection.head_col)
+    {
+        grid.selectionClear();
+        const v: objc.id = @ptrCast(@constCast(view));
+        objc.msgSend(void, v, objc.sel("setNeedsDisplay:"), .{objc.YES});
+    }
+}
+
+fn viewKeyDown(view_self: *const anyopaque, _: objc.SEL, event: objc.id) callconv(.c) void {
     const callback = global_input_callback orelse return;
     const grid = global_grid orelse return;
 
@@ -150,11 +199,49 @@ fn viewKeyDown(_: *const anyopaque, _: objc.SEL, event: objc.id) callconv(.c) vo
         chars = std.mem.span(cstr);
     }
 
-    if (modifier_flags & input.ModifierFlags.command != 0) return;
+    if (modifier_flags & input.ModifierFlags.command != 0) {
+        if (chars.len == 1) {
+            const v: objc.id = @ptrCast(@constCast(view_self));
+            switch (chars[0]) {
+                'v', 'V' => handlePaste(grid, callback),
+                'c', 'C' => handleCopy(grid, v),
+                'a', 'A' => handleSelectAll(grid, v),
+                else => {},
+            }
+        }
+        return;
+    }
 
     if (input.encodeKey(keycode, chars, modifier_flags, grid.app_cursor_keys)) |result| {
         callback(result.bytes());
     }
+}
+
+fn handlePaste(grid: *cell_mod.CellGrid, callback: *const fn ([]const u8) void) void {
+    const text = pasteboard.getString() orelse return;
+    if (text.len == 0) return;
+    if (grid.bracketed_paste) {
+        callback("\x1b[200~");
+        callback(text);
+        callback("\x1b[201~");
+    } else {
+        callback(text);
+    }
+}
+
+fn handleCopy(grid: *cell_mod.CellGrid, view: objc.id) void {
+    if (!grid.selection.active) return;
+    const text = grid.selectionExtract(grid.allocator) catch return;
+    defer grid.allocator.free(text);
+    if (text.len == 0) return;
+    _ = pasteboard.setString(text);
+    grid.selectionClear();
+    objc.msgSend(void, view, objc.sel("setNeedsDisplay:"), .{objc.YES});
+}
+
+fn handleSelectAll(grid: *cell_mod.CellGrid, view: objc.id) void {
+    grid.selectAll();
+    objc.msgSend(void, view, objc.sel("setNeedsDisplay:"), .{objc.YES});
 }
 
 // ── Color helpers ───────────────────────────────────────────────────

@@ -58,6 +58,36 @@ pub const CursorState = struct {
     attrs: Attrs,
 };
 
+// ── Selection ───────────────────────────────────────────────────────
+
+pub const Selection = struct {
+    active: bool = false,
+    anchor_row: u16 = 0,
+    anchor_col: u16 = 0,
+    head_row: u16 = 0,
+    head_col: u16 = 0,
+
+    /// Returns (start_row, start_col, end_row, end_col) in reading order.
+    pub fn ordered(self: Selection) struct { sr: u16, sc: u16, er: u16, ec: u16 } {
+        const a_before = self.anchor_row < self.head_row or
+            (self.anchor_row == self.head_row and self.anchor_col <= self.head_col);
+        return if (a_before)
+            .{ .sr = self.anchor_row, .sc = self.anchor_col, .er = self.head_row, .ec = self.head_col }
+        else
+            .{ .sr = self.head_row, .sc = self.head_col, .er = self.anchor_row, .ec = self.anchor_col };
+    }
+
+    pub fn contains(self: Selection, row: u16, col: u16) bool {
+        if (!self.active) return false;
+        const o = self.ordered();
+        if (row < o.sr or row > o.er) return false;
+        if (o.sr == o.er) return col >= o.sc and col <= o.ec;
+        if (row == o.sr) return col >= o.sc;
+        if (row == o.er) return col <= o.ec;
+        return true;
+    }
+};
+
 // ── Cell Grid ───────────────────────────────────────────────────────
 
 pub const CellGrid = struct {
@@ -95,6 +125,9 @@ pub const CellGrid = struct {
 
     // Wrap pending: cursor at right margin, next printable wraps
     wrap_pending: bool = false,
+
+    // Selection (set by GUI mouse, used by renderer + clipboard copy)
+    selection: Selection = .{},
 
     // Title
     title: [256]u8 = undefined,
@@ -400,6 +433,71 @@ pub const CellGrid = struct {
         };
     }
 
+    // ── Selection ───────────────────────────────────────────────────
+
+    pub fn selectionStart(self: *CellGrid, row: u16, col: u16) void {
+        const r = @min(row, self.rows -| 1);
+        const c = @min(col, self.cols -| 1);
+        self.selection = .{ .active = true, .anchor_row = r, .anchor_col = c, .head_row = r, .head_col = c };
+    }
+
+    pub fn selectionExtend(self: *CellGrid, row: u16, col: u16) void {
+        if (!self.selection.active) return;
+        self.selection.head_row = @min(row, self.rows -| 1);
+        self.selection.head_col = @min(col, self.cols -| 1);
+    }
+
+    pub fn selectionClear(self: *CellGrid) void {
+        self.selection.active = false;
+    }
+
+    pub fn selectAll(self: *CellGrid) void {
+        self.selection = .{
+            .active = true,
+            .anchor_row = 0,
+            .anchor_col = 0,
+            .head_row = self.rows -| 1,
+            .head_col = self.cols -| 1,
+        };
+    }
+
+    /// Extract selected text as UTF-8. Trailing spaces on each line are
+    /// trimmed; rows are joined with '\n'. Caller owns returned memory.
+    /// Returns empty slice if no active selection.
+    pub fn selectionExtract(self: *const CellGrid, allocator: std.mem.Allocator) ![]u8 {
+        if (!self.selection.active) return try allocator.alloc(u8, 0);
+        const o = self.selection.ordered();
+
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(allocator);
+
+        var row: u16 = o.sr;
+        while (row <= o.er) : (row += 1) {
+            const col_start: u16 = if (row == o.sr) o.sc else 0;
+            const col_end: u16 = if (row == o.er) o.ec else self.cols - 1;
+
+            // Find last non-space cell ≤ col_end so trailing blanks are dropped
+            var last: i32 = @as(i32, col_start) - 1;
+            var col: u16 = col_start;
+            while (col <= col_end) : (col += 1) {
+                const ch = self.cellAtConst(row, col).char;
+                if (ch != ' ' and ch != 0) last = @intCast(col);
+            }
+
+            col = col_start;
+            while (@as(i32, col) <= last) : (col += 1) {
+                const ch = self.cellAtConst(row, col).char;
+                var buf: [4]u8 = undefined;
+                const n = std.unicode.utf8Encode(ch, &buf) catch 0;
+                if (n > 0) try out.appendSlice(allocator, buf[0..n]);
+            }
+
+            if (row != o.er) try out.append(allocator, '\n');
+        }
+
+        return try out.toOwnedSlice(allocator);
+    }
+
     /// Perform a full reset (RIS).
     pub fn reset(self: *CellGrid) void {
         if (self.in_alt_screen) self.switchToMainScreen();
@@ -417,6 +515,7 @@ pub const CellGrid = struct {
         self.app_cursor_keys = false;
         self.bracketed_paste = false;
         self.wrap_pending = false;
+        self.selection = .{};
         for (self.cells) |*c| c.* = .{};
     }
 };
@@ -478,6 +577,51 @@ test "grid erase in display" {
     grid.eraseInDisplay(2); // erase all
 
     try std.testing.expectEqual(@as(u21, ' '), grid.cellAtConst(0, 0).char);
+}
+
+test "selection extract single row trims trailing spaces" {
+    var grid = try CellGrid.init(std.testing.allocator, 10, 3);
+    defer grid.deinit();
+
+    for ("hello") |ch| grid.putChar(ch);
+    grid.selectionStart(0, 0);
+    grid.selectionExtend(0, 9);
+
+    const out = try grid.selectionExtract(std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("hello", out);
+}
+
+test "selection extract multi-row joins with newlines" {
+    var grid = try CellGrid.init(std.testing.allocator, 5, 3);
+    defer grid.deinit();
+
+    grid.setCursorPos(0, 0);
+    for ("foo") |ch| grid.putChar(ch);
+    grid.setCursorPos(1, 0);
+    for ("bar") |ch| grid.putChar(ch);
+    grid.setCursorPos(2, 0);
+    for ("baz") |ch| grid.putChar(ch);
+
+    grid.selectionStart(0, 0);
+    grid.selectionExtend(2, 4);
+
+    const out = try grid.selectionExtract(std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("foo\nbar\nbaz", out);
+}
+
+test "selection ordered handles backward drag" {
+    var grid = try CellGrid.init(std.testing.allocator, 10, 3);
+    defer grid.deinit();
+
+    for ("hello") |ch| grid.putChar(ch);
+    grid.selectionStart(0, 4);
+    grid.selectionExtend(0, 0);
+
+    const out = try grid.selectionExtract(std.testing.allocator);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("hello", out);
 }
 
 test "Color equality" {

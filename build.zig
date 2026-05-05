@@ -359,6 +359,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "coretext", .module = coretext_mod },
             .{ .name = "cell", .module = cell_mod },
             .{ .name = "input", .module = input_mod },
+            .{ .name = "pasteboard", .module = pasteboard_mod },
         },
     });
     terminal_view_mod.linkFramework("AppKit", .{});

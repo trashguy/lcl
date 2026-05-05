@@ -86,7 +86,7 @@ Continuous bidirectional byte stream. 3-byte frame header: `type(u8) + len(u16)`
 - [ ] Alpine support (needs custom initramfs with ext4 modules)
 - [ ] Window resize → shell resize propagation in GUI app
 - [ ] Multiple environments (currently hardcoded to "dev")
-- [ ] Clipboard integration in GUI (Cmd+C/V → bridge)
+- [x] Clipboard integration in GUI (Cmd+C/V/A, mouse drag-select)
 - [ ] VM lifecycle controls in GUI (start/stop/build from menu)
 - [ ] Clean shutdown (stop VM gracefully on app quit)
 - [ ] Memory leak cleanup in buildVmConfig
