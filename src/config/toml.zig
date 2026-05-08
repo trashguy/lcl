@@ -126,6 +126,12 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) ParseError!ParsedC
                     config.appearance.bg_g = try parseFloat(raw_value);
                 } else if (std.mem.eql(u8, key, "bg_b")) {
                     config.appearance.bg_b = try parseFloat(raw_value);
+                } else if (std.mem.eql(u8, key, "theme")) {
+                    config.appearance.theme = try parseString(allocator, raw_value);
+                } else if (std.mem.eql(u8, key, "scrollback_lines")) {
+                    config.appearance.scrollback_lines = try parseUint(raw_value);
+                } else if (std.mem.eql(u8, key, "scrollback_unlimited")) {
+                    config.appearance.scrollback_unlimited = try parseBool(raw_value);
                 } else return error.UnknownKey;
             },
         }
@@ -213,6 +219,12 @@ pub const ParsedConfig = struct {
 
         // Free dotfiles
         if (self.config.setup.dotfiles) |d| self.allocator.free(d);
+
+        // Free theme name
+        if (self.config.appearance.theme) |t| self.allocator.free(t);
+
+        // Free appearance font
+        freeIfAllocated(self.allocator, self.config.appearance.font, "Menlo");
 
         // Free string arrays
         for (self.config.setup.packages) |p| self.allocator.free(p);

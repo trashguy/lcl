@@ -562,6 +562,16 @@ pub fn build(b: *std.Build) void {
         .root_module = config_types_test_mod,
     })).step);
 
+    // Theme parser tests
+    const theme_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/theme.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{
+        .root_module = theme_test_mod,
+    })).step);
+
     // Args tests
     const args_test_mod = b.createModule(.{
         .root_source_file = b.path("src/cli/args.zig"),

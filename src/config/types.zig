@@ -48,8 +48,29 @@ pub const LclConfig = struct {
         bg_r: f32 = 0.0,
         bg_g: f32 = 0.0,
         bg_b: f32 = 0.0,
+        /// Optional Ghostty-style theme name. Resolved against bundled themes
+        /// first, then ~/.config/lcl/themes/<name>(.conf). When set, the theme's
+        /// palette / foreground / background / cursor color override the
+        /// individual fg_*/bg_* fields above.
+        theme: ?[]const u8 = null,
+
+        /// How many lines of scrollback history the renderer retains.
+        /// Ignored when `scrollback_unlimited` is true. Memory cost is
+        /// approximately `lines * cols * 16 bytes`.
+        scrollback_lines: u32 = 1000,
+
+        /// If true, scrollback is capped at the internal "effectively
+        /// unlimited" ceiling (100k lines) rather than honouring
+        /// `scrollback_lines`. We don't expose true unlimited because a
+        /// runaway log producer would otherwise grow allocations until
+        /// the app is killed.
+        scrollback_unlimited: bool = false,
     };
 };
+
+/// Internal ceiling used when the user ticks "Unlimited" in the scrollback
+/// setting. ~100k lines × 100 cols × 16 B/cell ≈ 160 MB worst case.
+pub const scrollback_unlimited_cap: u32 = 100_000;
 
 /// Serialize an LclConfig to TOML format.
 pub fn serialize(config: LclConfig, writer: anytype) !void {
@@ -95,6 +116,11 @@ pub fn serialize(config: LclConfig, writer: anytype) !void {
     try writeFloat(writer, "bg_r", config.appearance.bg_r);
     try writeFloat(writer, "bg_g", config.appearance.bg_g);
     try writeFloat(writer, "bg_b", config.appearance.bg_b);
+    if (config.appearance.theme) |t| {
+        try writeString(writer, "theme", t);
+    }
+    try writeInt(writer, "scrollback_lines", config.appearance.scrollback_lines);
+    try writeBool(writer, "scrollback_unlimited", config.appearance.scrollback_unlimited);
 }
 
 fn writeString(writer: anytype, key: []const u8, value: []const u8) !void {

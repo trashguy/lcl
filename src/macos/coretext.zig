@@ -90,8 +90,9 @@ pub fn createFont(name: [*:0]const u8, size: objc.CGFloat) FontInfo {
 
 // ── Color conversion ────────────────────────────────────────────────
 
-/// Standard ANSI 16-color palette (xterm defaults).
-pub const ansi_palette = [16][3]u8{
+/// Standard ANSI 16-color palette (xterm defaults). Used to reset the active
+/// palette when no theme is selected.
+pub const default_ansi_palette = [16][3]u8{
     .{ 0, 0, 0 }, // 0: black
     .{ 205, 0, 0 }, // 1: red
     .{ 0, 205, 0 }, // 2: green
@@ -109,6 +110,20 @@ pub const ansi_palette = [16][3]u8{
     .{ 0, 255, 255 }, // 14: bright cyan
     .{ 255, 255, 255 }, // 15: bright white
 };
+
+/// Active 16-color palette. Themed apps mutate this via setPaletteEntry.
+pub var ansi_palette: [16][3]u8 = default_ansi_palette;
+
+/// Reset the active palette to the xterm defaults.
+pub fn resetPalette() void {
+    ansi_palette = default_ansi_palette;
+}
+
+/// Override one entry in the active palette.
+pub fn setPaletteEntry(index: u8, r: u8, g: u8, b: u8) void {
+    if (index >= 16) return;
+    ansi_palette[index] = .{ r, g, b };
+}
 
 pub const Rgb = struct { r: objc.CGFloat, g: objc.CGFloat, b: objc.CGFloat };
 
