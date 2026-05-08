@@ -51,9 +51,11 @@ pub fn run() !void {
             stderr.print("accept error: {s}\n", .{@errorName(err)}) catch {};
             continue;
         };
+        stderr.writeAll("lcl-shell-service: accepted connection\n") catch {};
 
         // Fork to handle each connection
-        const pid = std.posix.fork() catch {
+        const pid = std.posix.fork() catch |err| {
+            stderr.print("fork failed: {s}\n", .{@errorName(err)}) catch {};
             std.posix.close(conn_fd);
             continue;
         };
@@ -61,7 +63,10 @@ pub fn run() !void {
         if (pid == 0) {
             // Child — handle the connection
             std.posix.close(listen_fd);
-            handleConnection(conn_fd) catch {};
+            handleConnection(conn_fd) catch |err| {
+                const child_stderr = std.fs.File.stderr().deprecatedWriter();
+                child_stderr.print("handleConnection error: {s}\n", .{@errorName(err)}) catch {};
+            };
             std.process.exit(0);
         } else {
             // Parent — close our copy and continue accepting
@@ -76,10 +81,15 @@ pub fn run() !void {
 
 fn handleConnection(conn_fd: std.posix.fd_t) !void {
     defer std.posix.close(conn_fd);
+    const log = std.fs.File.stderr().deprecatedWriter();
 
     // Open a PTY
-    const pty = try openPty();
+    const pty = openPty() catch |err| {
+        log.print("openPty failed: {s}\n", .{@errorName(err)}) catch {};
+        return err;
+    };
     defer std.posix.close(pty.master);
+    log.writeAll("pty opened\n") catch {};
 
     // Set initial terminal size
     var ws = std.posix.winsize{
@@ -91,7 +101,10 @@ fn handleConnection(conn_fd: std.posix.fd_t) !void {
     _ = std.posix.system.ioctl(pty.master, TIOCSWINSZ, @intFromPtr(&ws));
 
     // Fork the shell process
-    const shell_pid = std.posix.fork() catch return;
+    const shell_pid = std.posix.fork() catch |err| {
+        log.print("shell fork failed: {s}\n", .{@errorName(err)}) catch {};
+        return;
+    };
 
     if (shell_pid == 0) {
         // Child — become session leader, set controlling terminal, exec shell
@@ -119,6 +132,36 @@ fn handleConnection(conn_fd: std.posix.fd_t) !void {
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             null,
         };
+
+        // If /etc/lcl/user names a user that *actually exists in /etc/passwd*,
+        // drop privileges via runuser -l. The /etc/passwd check matters: on
+        // first boot the file is written before firstboot has run, so the
+        // account doesn't exist yet — without the guard we'd execve into
+        // runuser, fail with "user does not exist", and systemd would loop
+        // forever on Restart=always. -w preserves a small env whitelist so
+        // xterm colors survive the login shell's env wipe.
+        var user_buf: [64:0]u8 = undefined;
+        @memset(&user_buf, 0);
+        if (readLclUser(&user_buf)) |user| {
+            if (userExists(user)) {
+                const user_z: [*:0]const u8 = @ptrCast(&user_buf);
+                // runuser arg order: all options must precede USER, otherwise
+                // everything past USER is forwarded as arguments to the
+                // login shell (and bash blows up on -w as "invalid option").
+                // Use the long form with `=` so getopt has no ambiguity.
+                const argv = [_:null]?[*:0]const u8{
+                    "/usr/bin/runuser",
+                    "--whitelist-environment=TERM,COLORTERM,LANG",
+                    "-l",
+                    user_z,
+                    null,
+                };
+                std.posix.execveZ("/usr/bin/runuser", &argv, &env) catch {};
+                // Fall through to root shells if runuser binary itself is
+                // missing (extremely unlikely — util-linux is pulled in by
+                // Arch base) or execve otherwise failed.
+            }
+        }
 
         // Try shells in order
         const shells = [_][*:0]const u8{ "/bin/zsh", "/bin/bash", "/bin/sh" };
@@ -162,6 +205,66 @@ fn openPty() !Pty {
     const slave = try std.posix.openZ(path, .{ .ACCMODE = .RDWR, .NOCTTY = true }, 0);
 
     return .{ .master = master, .slave = slave };
+}
+
+// ── User lookup ─────────────────────────────────────────────────────
+
+/// Read /etc/lcl/user into `buf` (a null-terminated buffer). Returns the
+/// trimmed slice on success, null if the file is missing/empty/invalid.
+fn readLclUser(buf: *[64:0]u8) ?[]const u8 {
+    const fd = std.posix.openZ("/etc/lcl/user", .{ .ACCMODE = .RDONLY }, 0) catch return null;
+    defer std.posix.close(fd);
+
+    const n = std.posix.read(fd, buf[0..64]) catch return null;
+    if (n == 0) return null;
+
+    var len: usize = n;
+    while (len > 0) {
+        const c = buf[len - 1];
+        if (c == '\n' or c == '\r' or c == ' ' or c == '\t' or c == 0) {
+            len -= 1;
+        } else break;
+    }
+    if (len == 0) return null;
+    buf[len] = 0;
+    return buf[0..len];
+}
+
+/// Return true if `user` appears as the login name (the field before the
+/// first `:`) in /etc/passwd. Avoids pulling libc's getpwnam — we only
+/// need a yes/no answer to gate `runuser`.
+fn userExists(user: []const u8) bool {
+    const fd = std.posix.openZ("/etc/passwd", .{ .ACCMODE = .RDONLY }, 0) catch return false;
+    defer std.posix.close(fd);
+
+    var buf: [4096]u8 = undefined;
+    var line_buf: [256]u8 = undefined;
+    var line_len: usize = 0;
+
+    while (true) {
+        const n = std.posix.read(fd, &buf) catch return false;
+        if (n == 0) break;
+        for (buf[0..n]) |c| {
+            if (c == '\n') {
+                if (matchPasswdLine(line_buf[0..line_len], user)) return true;
+                line_len = 0;
+            } else if (line_len < line_buf.len) {
+                line_buf[line_len] = c;
+                line_len += 1;
+            } else {
+                // Line longer than 256 bytes — skip it (real entries are far
+                // shorter) and resync at the next newline.
+                line_len = 0;
+            }
+        }
+    }
+    if (line_len > 0 and matchPasswdLine(line_buf[0..line_len], user)) return true;
+    return false;
+}
+
+fn matchPasswdLine(line: []const u8, user: []const u8) bool {
+    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return false;
+    return std.mem.eql(u8, line[0..colon], user);
 }
 
 // ── Relay loop ──────────────────────────────────────────────────────

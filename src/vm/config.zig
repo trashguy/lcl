@@ -14,10 +14,14 @@ pub const ConfigError = error{
 
 /// Build a validated VZVirtualMachineConfiguration from user config.
 /// `config_dir` is the absolute path to ~/.config/lcl/<name>/.
+/// If `console_log_path` is non-null, the serial console is redirected to
+/// that file (append mode). Useful for the GUI where stdout goes nowhere.
+/// Pass null from the CLI so kernel output flows to the user's terminal.
 pub fn buildVmConfig(
     lcl: config_types.LclConfig,
     config_dir: []const u8,
     allocator: std.mem.Allocator,
+    console_log_path: ?[*:0]const u8,
 ) ConfigError!vz.VirtualMachineConfiguration {
     const vm_config = vz.VirtualMachineConfiguration.init();
 
@@ -52,9 +56,12 @@ pub fn buildVmConfig(
 
     vm_config.setBootLoader(boot_loader.obj);
 
-    // Serial console (stdin/stdout)
-    const console = devices.createSerialConsole();
-    vm_config.setSerialPorts(devices.singletonArray(console.obj));
+    // Serial console — log file if requested (GUI), else stdin/stdout (CLI).
+    const console_obj = if (console_log_path) |p|
+        (devices.createSerialConsoleToFile(p) orelse devices.createSerialConsole()).obj
+    else
+        devices.createSerialConsole().obj;
+    vm_config.setSerialPorts(devices.singletonArray(console_obj));
 
     // Block storage (rootfs)
     const rootfs_path = std.fs.path.joinZ(allocator, &.{ config_dir, lcl.environment.rootfs }) catch

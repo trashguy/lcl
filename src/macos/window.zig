@@ -4,6 +4,23 @@ const objc = @import("objc");
 
 var window_delegate_registered: bool = false;
 
+/// Optional callback invoked from `windowDidResize:`. The host can register
+/// this to recompute the terminal grid size when the user drags the window
+/// edges. Receives the resized NSWindow.
+var resize_callback: ?*const fn (objc.id) void = null;
+
+pub fn setResizeCallback(cb: *const fn (objc.id) void) void {
+    resize_callback = cb;
+}
+
+/// Optional callback invoked from `windowWillClose:` so the host can tear
+/// down per-window state (e.g. close the shell socket for that tab).
+var will_close_callback: ?*const fn (objc.id) void = null;
+
+pub fn setWillCloseCallback(cb: *const fn (objc.id) void) void {
+    will_close_callback = cb;
+}
+
 /// Create a main window with the given content view.
 pub fn createMainWindow(content_view: objc.id, title: [*:0]const u8) objc.id {
     const NSWindow = objc.getClass("NSWindow") orelse @panic("NSWindow not found");
@@ -71,6 +88,23 @@ pub fn addTabbedWindow(existing: objc.id, content_view: objc.id, title: [*:0]con
     objc.msgSend(void, new_window, objc.sel("setTitle:"), .{objc.nsString(title)});
     objc.msgSend(void, new_window, objc.sel("setContentView:"), .{content_view});
 
+    // Black background to match terminal (host can override after via setBackgroundColor:)
+    const NSColor = objc.getClass("NSColor");
+    if (NSColor) |cls| {
+        const black = objc.msgSend(objc.id, cls, objc.sel("blackColor"), .{});
+        objc.msgSend(void, new_window, objc.sel("setBackgroundColor:"), .{black});
+    }
+
+    // Set delegate so windowDidResize: fires for the new tab too
+    ensureWindowDelegateClass();
+    if (objc.getClass("LCLWindowDelegate")) |delegate_cls| {
+        const delegate = objc.init(objc.alloc(delegate_cls));
+        objc.msgSend(void, new_window, objc.sel("setDelegate:"), .{delegate});
+    }
+
+    // Enable window tabbing
+    objc.msgSend(void, new_window, objc.sel("setTabbingMode:"), .{@as(objc.NSInteger, 0)});
+
     // Add as tabbed window (NSWindowAbove = 1)
     objc.msgSend(void, existing, objc.sel("addTabbedWindow:ordered:"), .{
         new_window,
@@ -96,12 +130,40 @@ fn ensureWindowDelegateClass() void {
         "c@:@",
     );
 
+    // windowDidResize: -> void
+    _ = objc.addMethod(
+        cls,
+        objc.sel("windowDidResize:"),
+        @ptrCast(&windowDidResize),
+        "v@:@",
+    );
+
+    // windowWillClose: -> void
+    _ = objc.addMethod(
+        cls,
+        objc.sel("windowWillClose:"),
+        @ptrCast(&windowWillClose),
+        "v@:@",
+    );
+
     objc.registerClass(cls);
     window_delegate_registered = true;
 }
 
 fn windowShouldClose(_: *const anyopaque, _: objc.SEL, _: objc.id) callconv(.c) objc.BOOL {
     return objc.YES;
+}
+
+fn windowDidResize(_: *const anyopaque, _: objc.SEL, notification: objc.id) callconv(.c) void {
+    const cb = resize_callback orelse return;
+    const window = objc.msgSend(objc.id, notification, objc.sel("object"), .{});
+    cb(window);
+}
+
+fn windowWillClose(_: *const anyopaque, _: objc.SEL, notification: objc.id) callconv(.c) void {
+    const cb = will_close_callback orelse return;
+    const window = objc.msgSend(objc.id, notification, objc.sel("object"), .{});
+    cb(window);
 }
 
 // ── NSRect / NSSize / NSPoint ───────────────────────────────────────

@@ -9,9 +9,39 @@ pub const DeviceError = error{
 };
 
 /// Serial console: stdin/stdout attached to VirtIO console port.
+/// Used by the CLI (`lcl start`) where the user *wants* the kernel + systemd
+/// output on their terminal.
 pub fn createSerialConsole() vz.VirtioConsoleDeviceSerialPortConfiguration {
     const stdin_fh = objc.fileHandleWithDescriptor(0);
     const stdout_fh = objc.fileHandleWithDescriptor(1);
+    const attachment = vz.FileHandleSerialPortAttachment.initWithFileHandles(stdin_fh, stdout_fh);
+
+    var console = vz.VirtioConsoleDeviceSerialPortConfiguration.init();
+    console.setAttachment(attachment.obj);
+    return console;
+}
+
+/// Serial console redirected to a log file. Used by the GUI app where
+/// stdout typically goes nowhere (Finder launch). Opens `log_path` in
+/// append mode (O_CREAT|O_WRONLY|O_APPEND) so the user can `tail -f` it.
+/// Stdin is wired to /dev/null — nothing in the guest reads it anyway.
+/// Returns null if the log file can't be opened so the caller can fall
+/// back to the stdin/stdout attachment.
+pub fn createSerialConsoleToFile(log_path: [*:0]const u8) ?vz.VirtioConsoleDeviceSerialPortConfiguration {
+    const O = std.posix.O;
+    const log_fd = std.posix.openZ(log_path, .{
+        .ACCMODE = .WRONLY,
+        .CREAT = true,
+        .APPEND = true,
+    }, 0o644) catch return null;
+    const null_fd = std.posix.openZ("/dev/null", .{ .ACCMODE = .RDONLY }, 0) catch {
+        std.posix.close(log_fd);
+        return null;
+    };
+    _ = O;
+
+    const stdin_fh = objc.fileHandleWithDescriptor(@intCast(null_fd));
+    const stdout_fh = objc.fileHandleWithDescriptor(@intCast(log_fd));
     const attachment = vz.FileHandleSerialPortAttachment.initWithFileHandles(stdin_fh, stdout_fh);
 
     var console = vz.VirtioConsoleDeviceSerialPortConfiguration.init();

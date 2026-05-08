@@ -59,7 +59,7 @@ pub fn run(allocator: std.mem.Allocator, opts: anytype) !void {
     };
 
     // Build VM configuration
-    const vz_config = vm_config.buildVmConfig(parsed.config, config_dir, allocator) catch |err| {
+    const vz_config = vm_config.buildVmConfig(parsed.config, config_dir, allocator, null) catch |err| {
         try stderr.print("Failed to build VM config: {s}\n", .{@errorName(err)});
         return;
     };

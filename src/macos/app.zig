@@ -98,7 +98,7 @@ fn setupMenuBar(app: objc.id, delegate: objc.id) void {
     });
     objc.msgSend(void, view_item, objc.sel("setSubmenu:"), .{view_menu});
 
-    addMenuItem(view_menu, "New Tab", "newTab:", "t", null);
+    addMenuItem(view_menu, "New Tab", "newTab:", "t", delegate);
     addMenuItem(view_menu, "Split Vertical", "splitVertical:", "d", null);
 
     // Window menu

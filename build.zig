@@ -440,6 +440,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "bridge_handler", .module = bridge_handler_mod },
             .{ .name = "ssh_agent_host", .module = ssh_agent_host_mod },
             .{ .name = "settings", .module = settings_mod },
+            .{ .name = "theme", .module = theme_mod },
         },
     });
     lcl_app_mod.linkFramework("AppKit", .{});
