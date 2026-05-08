@@ -33,7 +33,7 @@ pub fn run(allocator: std.mem.Allocator, opts: anytype) !void {
         return;
     };
 
-    image.buildImage(allocator, name, dist) catch |err| {
+    image.buildImage(allocator, name, dist, parsed.config.setup.packages) catch |err| {
         try stderr.print("Build failed: {s}\n", .{@errorName(err)});
         return;
     };

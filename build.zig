@@ -21,6 +21,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const theme_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/theme.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const objc_mod = b.createModule(.{
         .root_source_file = b.path("src/macos/objc.zig"),
         .target = target,
@@ -401,6 +407,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "objc", .module = objc_mod },
             .{ .name = "config", .module = config_mod },
             .{ .name = "toml", .module = toml_mod },
+            .{ .name = "theme", .module = theme_mod },
+            .{ .name = "image", .module = image_mod },
         },
     });
     settings_mod.linkFramework("AppKit", .{});
