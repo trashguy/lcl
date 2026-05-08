@@ -42,17 +42,19 @@ var bdev = c.ext4_blockdev{
 // ── Public API ──────────────────────────────────────────────────────
 
 /// Initialize the block device backed by a file.
-/// Creates a sparse file of the given size if it doesn't exist,
-/// or opens an existing one.
+/// Always starts from a zeroed-out file: lwext4's mkfs only writes the
+/// blocks it needs to touch, so stale ext4 metadata left over from a
+/// previous build (block group descriptors, bitmaps) can survive in
+/// untouched regions and cause "block bitmap and bg descriptor
+/// inconsistent" errors at mount time. Truncating to 0 first then
+/// extending guarantees a clean slate.
 pub fn init(path: []const u8, total_size: u64) !void {
-    // Create or open the backing file
     const file = try std.fs.createFileAbsolute(path, .{
         .read = true,
-        .truncate = false,
+        .truncate = true,
     });
     errdefer file.close();
 
-    // Set file to exact size (truncate if exists, extend if new)
     try file.setEndPos(total_size);
 
     backing_file = file;
